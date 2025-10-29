@@ -1,0 +1,17 @@
+*.csv
+.ipynb_checkpoints/
+
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+*.zip
+*.tar.gz
+
+.DS_Store
