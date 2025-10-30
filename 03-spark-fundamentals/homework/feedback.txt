@@ -1,0 +1,94 @@
+** This feedback is auto-generated from an LLM **
+
+
+
+Thanks for the submission. Overall you hit most of the required tasks and your structure is clean and easy to follow. Below is detailed feedback by requirement, with suggestions to tighten correctness and improve performance.
+
+What you did well
+- Disabled auto-broadcast joins globally (query_1): You set spark.sql.autoBroadcastJoinThreshold = -1 in the SparkSession builder. That satisfies the requirement.
+- Explicitly broadcast joined small dims (query_2): You used broadcast() for maps and medals, which is exactly what was asked.
+- Wrote and used bucketed tables (query_3): You wrote match_details, matches, and medals_matches_players as 16-bucketed tables on match_id and then joined them. This is the right approach.
+- Aggregations (query_4): The four query functions are well-structured and produce the required outputs. You also mitigated duplication from the medals join with count_distinct and max tricks where appropriate.
+- Partitioning experiments (query_5): You produced three+ partitioning variants and used sortWithinPartitions focusing on lower-cardinality fields (playlist_id, mapid). Good.
+
+Important issues to fix
+1) Likely join key mismatches for maps and medals
+- In most Halo datasets, medals.csv has an id column, and medals_matches_players has medal_id. Your code joins medals on "medal_id" but you never rename medals.id -> medal_id. If medals does not already have a medal_id column, this join will either fail or produce nulls.
+- Similarly, maps.csv typically has id or map_id, not necessarily mapid. You join on "mapid" but do not rename maps.id -> mapid.
+How to fix robustly:
+- Either rename IDs on the dimensions to match the fact keys:
+  medals = medals.withColumnRenamed("id", "medal_id") \
+                 .withColumnRenamed("name", "medal_name") \
+                 .withColumnRenamed("description", "medal_description")
+  maps = maps.withColumnRenamed("id", "mapid") \
+             .withColumnRenamed("name", "map_name") \
+             .withColumnRenamed("description", "map_description")
+- Or join with explicit conditions (no renames):
+  .join(broadcast(maps), m_b.mapid == maps.id, "left") \
+  .join(broadcast(medals), mmp_b.medal_id == medals.id, "left")
+If you keep your current on="medal_id"/"mapid" style, please confirm those columns truly exist on both sides.
+
+2) Bucketed join usage may be partially negated
+- You correctly bucketed all three big tables on match_id with 16 buckets and sorted by match_id. The first join md_b.join(m_b, on="match_id") can take advantage of bucketing.
+- The next join with mmp_b is on ["match_id", "player_gamertag"], but mmp_b is bucketed only on match_id. That extra key can prevent the optimizer from using the bucket layout for that join, causing a shuffle.
+What to do:
+- It’s okay if only the first join benefits from the buckets, but be explicit: verify with joined_df.explain("formatted") and ensure the md_b ↔ m_b join is using a bucketed or at least a non-shuffle SMJ. If you want to benefit on the second join as well, you’d need to bucket mmp_b on both match_id and player_gamertag (and match that on the other side), which is often not worth it.
+- Make sure spark.sql.bucketing.enabled is true (it is by default). Also consider setting a sane shuffle partition count for local runs, e.g. spark.conf.set("spark.sql.shuffle.partitions", "16").
+
+3) Size-comparison function does not recurse into partitioned subfolders
+- compare_file_size only sums files in the top-level folder. For partitioned writes, data files live in subdirectories, so you’re mostly measuring zero or metadata only.
+Fix:
+- Walk the directory tree:
+  def compare_file_size(paths):
+      import os
+      for path in paths:
+          total_size = 0
+          if os.path.exists(path):
+              for root, _, files in os.walk(path):
+                  for f in files:
+                      total_size += os.path.getsize(os.path.join(root, f))
+              print(f"{path}: {round(total_size / 1024 / 1024, 2)} MB")
+          else:
+              print(f"Path not found: {path}")
+
+Opportunities to improve correctness and efficiency
+- Avoid unnecessary joins for queries that don’t need medals:
+  - q1, q2, q3 do not need medals. Because joined_df includes mmp joins, it explodes rows per player/medal and forces you to use max/count_distinct to compensate. That is correct but more expensive than needed.
+  - Suggestions:
+    - For q1 (avg kills per game): compute from match_details only, or from md_b joined with matches but not mmp_b. A clean and efficient pattern:
+      joined_df.select("match_id","player_gamertag","player_total_kills") \
+               .dropDuplicates(["match_id","player_gamertag"]) \
+               .groupBy("player_gamertag") \
+               .agg(avg("player_total_kills").alias("avg_kills_per_match")) \
+               .orderBy(desc("avg_kills_per_match"))
+    - For q2 (playlist plays) and q3 (map plays): aggregate from matches (or md⊳matches with a dropDuplicates on match_id) to avoid count_distinct over inflated joined data.
+- Persist the reused joined_df after it is built:
+  - If you intend to reuse the fully joined frame for q4, do joined_df = joined_df.persist() after building it. But consider narrowing to only the columns needed for q4 to lower memory.
+- Partition strategy:
+  - You already produced multiple variants. Partitioning by mapid is reasonable; by mapid + map_name is redundant because map_name is functionally dependent on mapid and just explodes partition directories.
+  - You could also demonstrate coalesce/repartition to target fewer, larger files (e.g., aim ~128 MB per file) and optionally use option("maxRecordsPerFile").
+- Style:
+  - Avoid from queries import *. Prefer explicit imports for readability.
+  - Consider printing explain plans for join verification and using spark UI screenshots to document that bucketed joins were used.
+
+Minor notes
+- Using max("player_total_kills") after grouping by match_id, player_gamertag is a clever workaround to neutralize the medals-join duplication, but dropDuplicates on those keys before aggregating is clearer.
+- Count("medal_name") after filtering to Killing Spree is correct because nulls are excluded automatically by count(column).
+
+What I need from you if something fails or to finalize verification
+- Print the schemas of maps and medals (maps.printSchema(), medals.printSchema()) so I can confirm the actual ID column names.
+- Paste joined_df.explain("formatted") or a screenshot of the Spark UI SQL tab for the join to confirm whether a bucketed or SMJ without shuffle was used for md_b ↔ m_b.
+- Re-run size comparisons using the recursive compare_file_size shown above and paste the MB sizes.
+- Confirm Spark version (spark.version).
+- If any joins fail, send the error and the first few rows of each DataFrame (df.show(5)) to validate keys.
+
+Summary
+- Requirements met: 1, 2, 3 (with caveats on the 3-way bucket effectiveness), 4, and 5 (experiments done, but fix the size comparison).
+- Main correctness risk: join keys for medals/maps. Please adjust or confirm the schemas.
+- Main optimization gap: using the fully exploded joined_df for q1–q3 adds unnecessary cost; compute those from narrower sources.
+
+FINAL GRADE:
+{
+  "letter_grade": "B",
+  "passes": true
+}
