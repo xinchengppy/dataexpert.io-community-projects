@@ -1,0 +1,94 @@
+** This feedback is auto-generated from an LLM **
+
+Thanks for the submission. Overall, you showed solid command of window functions and aggregations, and your staging strategy is thoughtful. Below is detailed feedback by requirement, plus suggestions to tighten correctness and performance.
+
+High-level notes
+
+    Nice job creating a reusable staging_table to centralize deduping, points, and team win flags.
+    Your GROUPING SETS usage is sound and you rank/return ties correctly for queries 3–5.
+    The main gap is Query 1: it should be driven by players_scd or player_seasons to represent season-by-season activity and state transitions. Using the players table likely won’t track “Stayed Retired” or “Returned from Retirement” reliably.
+    Minor cleanup: one copy-paste comment mistake in hw3.sql (Query 7 header).
+
+Query-by-query feedback
+
+Query 1: Track players’ state changes
+
+    Issue: You’re sourcing from players and relying on columns current_season and is_active. In most NBA datasets, players is a static dimension (one row per player), while season-level activity is in players_scd or player_seasons. Without a row per player-season (including seasons where a player did not play), you can’t correctly identify “Stayed Retired” or “Returned from Retirement.”
+    Edge case: If a player has no row for seasons they didn’t play, you’ll never emit “Stayed Retired,” and “Returned from Retirement” only works if “inactive seasons” exist as rows.
+    Suggestion: Build a season spine per player and derive is_active by season from player_seasons or players_scd, then apply LAG. For example (adjust to your schema):
+        Use player_seasons to mark seasons a player appeared (is_active = 1).
+        Generate all seasons between a player’s first and last (or a global season range).
+        Left join and fill missing seasons with is_active = 0.
+        Apply LAG(is_active) OVER (PARTITION BY player_id ORDER BY season) and the CASE logic you wrote.
+    If players_scd already has a per-season active flag, partition by player_id and ORDER BY season, not by player_name, to avoid name inconsistencies.
+
+Query 2: GROUPING SETS over game_details
+
+    Good: Correct use of GROUPING SETS for (player_id, team_id), (player_id, season), and (team_id). The CASE using GROUPING() to label grouping_level is clean.
+    Good: COUNT(DISTINCT CASE WHEN team_won = 1 THEN game_id END) avoids double-counting wins because staging_table is at player-game grain.
+    Consider: If your warehouse supports it, you can add GROUPING_ID to simplify the grouping_level label logic.
+    Consider: Return team_name and season labels (if available) for readability.
+
+Query 3: Player who scored the most points for a single team
+
+    Good: Correct aggregation at player-team level and RANK to handle ties.
+    Minor: You can remove WHERE pts IS NOT NULL because pts is computed with COALESCE and won’t be NULL.
+
+Query 4: Player with the most points in a single season
+
+    Good: Correct aggregation at player-season level with RANK and tie support.
+    Same minor note about pts IS NOT NULL.
+
+Query 5: Team with the most total wins
+
+    Good: COUNT(DISTINCT game_id) with team_won = 1 is correct given your player-level grain.
+    Enhancement: Consider returning team_name alongside team_id.
+
+Query 6: Most games a team has won in a 90-game stretch
+
+    Good: You normalized to one row per team/game (team_games) and used ROWS BETWEEN 89 PRECEDING AND CURRENT ROW ordered by game_date_est, game_id. This correctly computes wins over the last 90 games played by that team.
+    Note: This is a 90-game stretch, not 90-day stretch, which matches the requirement.
+    Small improvement: If there are multiple games on the same date (rare), your tie-breaker by game_id ensures deterministic order—good. If your engine supports it, cluster/sort keys on (team_id, game_date_est, game_id) would help at scale.
+
+Query 7: Longest streak of LeBron James scoring over 10 points
+
+    Good: Classic gap-and-islands approach. Correct detection of streak starts via LAG and running SUM to group streaks, then MAX of lengths.
+    Suggestions:
+        Slight simplification of streak_start can remove the IS NULL branch by COALESCEing LAG to 0.
+        Consider partitioning windows explicitly by player_id even though you filter to LeBron; this is safer if generalizing.
+
+Staging table design (hw2.sql)
+
+    Deduplication: ROW_NUMBER() PARTITION BY (game_id, team_id, player_id) is a good pattern. Using the earliest game_date_est is fine.
+    Points calc: Your formula matches NBA scoring. There is often a pts column in game_details you could use directly, but your derivation is correct.
+    Team win flag: The CASE using home/visitor alignment with home_team_wins is correct.
+    Minor: If your dataset contains phantom rows (e.g., players with no minutes who didn’t play), you may want to exclude them at the staging layer (e.g., filter where minutes is not null or > 0 if such a column exists).
+
+Clarity and maintainability
+
+    File organization: You delivered queries across hw1.sql, hw2.sql, hw3.sql. The assignment states to save queries in the queries folder; ensure your files land there and are named as required by your project’s test harness, if any.
+    Comments: Mostly clear. Fix the copy-paste comment above Query 7.
+
+Performance considerations
+
+    COUNT(DISTINCT ...) can be expensive. Since you already normalized to team_games in Query 6, you could reuse a similar normalization for win counts in Queries 2 and 5 to avoid distinct. Example: precompute per-team per-game win flags once, then join or aggregate without DISTINCT.
+    If you anticipate multiple runs, consider creating a materialized view or an indexed table for team_games to speed up rolling computations.
+
+What I need from you if anything is unclear
+
+    The schema for players, players_scd, and player_seasons (columns and grain). Specifically:
+        Does players have per-season rows with current_season and is_active? If not, please switch Query 1 to players_scd or player_seasons as noted.
+        If players_scd provides an “active” flag by season, which columns represent season and active?
+    Confirmation of your SQL dialect (Postgres, Snowflake, BigQuery, etc.). GROUPING() and GROUPING SETS syntax can vary slightly.
+    Confirmation that games is available; it wasn’t listed in the prompt but is standard in this dataset.
+
+Suggested revision for Query 1 (illustrative; please adapt to your schema) -- If players_scd has one row per player per season with an is_active flag WITH season_status AS ( SELECT player_id, player_name, season, is_active FROM players_scd ), lagged AS ( SELECT player_id, player_name, season, is_active, LAG(is_active) OVER (PARTITION BY player_id ORDER BY season) AS prev_is_active FROM season_status ) SELECT player_id, player_name, season, is_active, CASE WHEN prev_is_active IS NULL AND is_active = TRUE THEN 'New' WHEN prev_is_active = TRUE AND is_active = FALSE THEN 'Retired' WHEN prev_is_active = TRUE AND is_active = TRUE THEN 'Continued Playing' WHEN prev_is_active = FALSE AND is_active = TRUE THEN 'Returned from Retirement' WHEN prev_is_active = FALSE AND is_active = FALSE THEN 'Stayed Retired' ELSE 'Unknown' END AS season_active_state FROM lagged ORDER BY player_id, season;
+
+If players_scd or player_seasons only has rows for seasons in which the player played, you’ll need to generate missing seasons per player to detect “Stayed Retired.” That requires a seasons calendar and a player-season spine.
+
+Overall assessment
+
+    Strengths: Good use of window frames and deduping; correct GROUPING SETS; accurate point and win logic; tie-aware ranking.
+    Primary fix needed: Query 1 must be rewritten on a per-season grain using players_scd or player_seasons to correctly emit all requested states.
+
+FINAL GRADE: { "letter_grade": "B", "passes": true }

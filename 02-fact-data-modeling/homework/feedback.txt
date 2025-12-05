@@ -1,0 +1,152 @@
+** This feedback is auto-generated from an LLM **
+
+Thanks for the thorough submission. You attempted all 8 prompts and covered both device- and host-based fact models. Below is focused, constructive feedback per rubric item, followed by suggested fixes and a final grade.
+
+    De-duplication Query (nba_game_details) Strengths:
+
+    Correct use of ROW_NUMBER() OVER (PARTITION BY game_id, team_id, player_id) to de-duplicate.
+    Sensible feature flags: dim_is_playing_at_home, did_not_play/dress/not_with_team from comment.
+    Minutes parsed from the min field and numeric stats are preserved.
+
+Areas to improve:
+
+    Source table name: The prompt mentions nba_game_details; you used game_details + join to games. If your environment uses different names, please clarify.
+    gd.* in the CTE pulls all columns, which can hide unintended columns and makes maintenance harder. Prefer explicit column lists.
+    Using POSITION('DNP' in comment) works, but consider guarding for case differences or variants. You handled NULL safely with COALESCE.
+    Minor style: add brief comments to explain tie-break ordering (why order by game_date_est) and the business logic of the flags.
+
+Verdict: Meets requirements functionally.
+
+    User Devices Activity Datelist DDL Strengths:
+
+    Schema aligns with the requirement: user_id, browser_type, date, and an array of dates (device_activity_datelist).
+    Strong key: PRIMARY KEY (user_id, browser_type, date).
+
+Areas to improve:
+
+    The spec mentions array or MAP; you chose array, which is fine. A short comment stating the invariant (array is most-recent-append, no duplicates) would help.
+    Consider adding NOT NULL to date with a default-free design (you already did NOT NULL).
+
+Verdict: Correct.
+
+    User Devices Activity Datelist Implementation Strengths:
+
+    Clear incremental pattern: yesterday + today, FULL OUTER JOIN, COALESCE, append arrays, loop over days.
+    Carry-forward on days with no activity is handled (append nothing but still create the record for that date).
+    Enforces primary key with ON CONFLICT DO NOTHING.
+
+Areas to improve:
+
+    Table names: The prompt references web_events; you used events. Please confirm if events is correct for your environment.
+    Device de-duplication key is problematic:
+        You partition by device_id, browser_type, device_type, os_type. If a device_id appears with multiple browser_types/OS rows, you will keep multiple rows per device_id. Joining events to device_deduped will then duplicate events rows and inflate activity. You should de-duplicate on device_id alone (or pick the “latest” row per device_id with ORDER BY an updated_at or effective timestamp if available).
+    Performance and idempotency:
+        The DO loop works but is procedural. A set-based upsert per day (or a single statement using generate_series) is more scalable and typically preferred in ELT workflows.
+    Add comments explaining:
+        Why you append today first vs. yesterday.
+        Why you carry-forward rows with no activity.
+
+Verdict: Conceptually right, but the device de-duplication bug can materially distort results. Needs a fix.
+
+    User Devices Activity Int Datelist Strengths:
+
+    Good idea to cross-join a fixed date spine and test membership with array containment.
+    Stores a compact representation (bit(32)).
+
+Areas to improve:
+
+    Date math bug: In Postgres, DATE - DATE yields integer days, not an interval. EXTRACT(DAY FROM ...) on a date difference will error. Use (DATE '2023-01-31' - d.valid_date)::int or age() with extraction.
+    Off-by-one in bit placement: POW(2, 32 - days_since) sets the 33rd bit for days_since=0. You likely want POW(2, 31 - days_since).
+    Casting to bit(32): Casting bigint to bit(32) isn’t portable and may not work as written. Storing as BIGINT is more portable. If bit(32) is a hard requirement, explicitly build the bit string or use varbit and cast carefully.
+    Missing discussion of bit orientation (LSB = most recent vs MSB = most recent). Please document the convention.
+
+Verdict: Does not meet correctness as-is due to math and casting issues.
+
+    Host Activity Datelist DDL Strengths:
+
+    Schema and key look correct: host, host_activity_datelist, date, primary key(host, date).
+
+Areas to improve:
+
+    Add a comment on array semantics (append order, handling of duplicates).
+
+Verdict: Correct.
+
+    Host Activity Datelist Implementation Strengths:
+
+    Mirrors the user_devices pattern correctly.
+    FULL OUTER JOIN with proper COALESCE ensures both new hosts and carry-forward are handled.
+    Good upsert strategy with ON CONFLICT DO NOTHING to avoid duplicate inserts on re-runs.
+
+Areas to improve:
+
+    Table names again: The prompt references web_events; you used events. Please confirm.
+    Comment the intent of setting date to y.date + 1 on carry-forward.
+
+Verdict: Correct.
+
+    Reduced Host Fact Array DDL Strengths:
+
+    Month grain with per-host arrays for hits and unique visitors; primary key fits the requirement.
+
+Areas to improve:
+
+    Consider NOT NULL on month and host.
+    Brief comment on array length expected (days elapsed in month so far) and padding behavior.
+
+Verdict: Correct.
+
+    Reduced Host Fact Array Implementation Strengths:
+
+    Solid incremental logic for the month; appending 0s for no-activity days maintains array alignment.
+    Use of ARRAY_FILL to pre-pad when first seeing a host mid-month is good.
+    Upsert with DO UPDATE sets the arrays properly.
+
+Areas to improve:
+
+    Metric correctness: You filter the today CTE with AND user_id IS NOT NULL, then compute num_hits = COUNT(1). That excludes anonymous traffic from hits. The proper approach:
+        num_hits = COUNT(*) over all events for that host/day.
+        unique_visitors_array = COUNT(DISTINCT user_id) while ignoring NULLs (use a FILTER or a CASE).
+    Table names: Please confirm web_events vs events.
+
+Verdict: Functionally close, but incorrect hit counting is a material bug.
+
+Style, comments, and best practices
+
+    Comments: A few files have short comments, but many queries would benefit from “why” comments (e.g., de-dup strategy, array append direction, carry-forward logic, integer datelist bit orientation).
+    Naming consistency: The rubric referenced nba_game_details and web_events. Your code uses game_details/games and events. If that’s your environment, note it at the top of the submission. If not, please align names.
+    SQL style: Generally readable. Avoid SELECT * and gd.*; prefer explicit column lists. Consistent casing for keywords and aliases helps linting.
+    Engine specifics: You rely on Postgres features (DO $$, arrays, ARRAY_FILL, bit type). If the grading environment differs (e.g., DuckDB/Snowflake/BigQuery), this will fail. Please specify your engine.
+
+What I need from you (if I set something up wrong)
+
+    Confirm the actual table names in your environment:
+        nba_game_details vs game_details (+ games)
+        web_events vs events
+    Confirm SQL engine/version (Postgres?).
+    Confirm the intended 32-day window and orientation for the integer datelist:
+        Is 2023-01-31 the “rightmost” or “leftmost” bit?
+        Do we include 2022-12-31 to make 32 bits total?
+    Provide the de-duplication rule for devices (is device_id alone the canonical key? Is there an updated_at column to break ties?).
+    If anonymized hits should include events with NULL user_id (they should), confirm this so we can finalize the today CTE in hw8.
+
+Targeted fix suggestions
+
+    hw3 device de-duplication:
+        Change PARTITION BY to device_id only. If there’s a timestamp to pick the latest, order by it so you get one canonical row per device_id.
+    hw3/hw6/hw8 event source:
+        If the canonical source is web_events, replace events with web_events consistently.
+    hw8 hit vs unique visitors:
+        Compute num_hits = COUNT(*) over the filtered day and host.
+        Compute num_distinct_users = COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL).
+        Do not restrict hits by user_id IS NOT NULL.
+    hw4 integer datelist:
+        Replace EXTRACT with integer date difference: days_since = (DATE '2023-01-31' - d.valid_date)::int.
+        Fix bit position: use (1::bigint << (31 - days_since)) if 31 is the most recent bit, or document your chosen orientation.
+        Prefer storing as BIGINT for portability unless bit(32) is explicitly required, in which case convert the integer to varbit/bit explicitly or store BIGINT and cast on read.
+
+Overall assessment
+
+    You implemented all 8 prompts and correctly solved at least 5 of them (1, 2, 5, 6, 7). Key issues remain in 3 (device de-dup join), 4 (integer datelist math/casting), and 8 (hit counting). With those fixes, this would be in very solid shape.
+
+FINAL GRADE: { "letter_grade": "B", "passes": true }

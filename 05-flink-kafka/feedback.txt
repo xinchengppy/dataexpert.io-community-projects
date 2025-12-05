@@ -1,0 +1,80 @@
+Thanks for the submission — you’re very close to an ideal solution. Below is detailed feedback aligned with the rubric, plus a few concrete fixes and suggestions to make your job more robust and the analysis clearer.
+
+Summary
+
+    You correctly sessionize by IP and host with a 5-minute gap and write to Postgres. Nice job.
+    Your SQL answers are directionally right but don’t fully match the question wording and don’t provide final numbers.
+    Instructions are mostly clear, but the Makefile target mentioned isn’t included and there’s no test data guidance, which makes verification hard.
+
+Correctness
+
+    Flink job/sessionization
+
+    Good: You use a session window with a 5-minute gap keyed by ip and host, and event-time semantics with a watermark.
+    Potential parsing pitfall: You rely on TO_TIMESTAMP(event_time, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z'''). Please confirm this function signature is available in Flink 1.16. If you see errors, switch to TO_TIMESTAMP_LTZ with a format string (available in 1.16) or parse the ISO-8601 string with a CAST if your source delivers TIMESTAMP-compatible strings.
+        Safer alternative DDL snippet (if TO_TIMESTAMP fails for your build):
+            window_timestamp AS TO_TIMESTAMP_LTZ(event_time, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z''')
+            And then use WATERMARK FOR window_timestamp AS window_timestamp - INTERVAL '15' SECOND
+    Counting events: You’re using col('ip').count. If ip is ever null, that undercounts. Prefer COUNT(1) or COUNT(*) to ensure correctness:
+        Replace col('ip').count.alias("num_events") with lit(1).count.alias("num_events") or col("*").count.
+
+    SQL answers
+
+    Q1 interpretation: The assignment’s phrasing (“What is the average number of web events per session for a user on Tech Creator?”) and the ideal solution both expect a single overall average value across Tech Creator sessions (not per user). Your query groups by ip and returns multiple rows. That’s useful, but please also provide the single overall average:
+        SELECT ROUND(AVG(num_events), 2) AS avg_events_per_session_techcreator FROM processed_events_sessionized WHERE host LIKE '%.techcreator.io';
+    Q2 host comparison: This is solid. It returns total_sessions and avg_num_events by host, which addresses the question.
+
+Code Quality
+
+    Table naming and re-runs: You create the JDBC sink table in the Flink catalog with the same name as the physical table. On reruns, CREATE TABLE may fail if the table exists in Flink’s catalog. Two suggestions:
+        Use a temporary table in Flink: t_env.create_temporary_table('processed_events_sessionized_sink', ...)
+        Or drop-if-exists before creating: t_env.execute_sql('DROP TABLE IF EXISTS processed_events_sessionized')
+    Robust counting: Use COUNT(*) or COUNT(1) as noted above.
+    Parameterization: Consider making the session gap configurable via an env var (e.g., SESSION_GAP_MINUTES) to ease experimentation.
+    Kafka options: 'scan.startup.mode'='latest-offset' already handles starting point; 'properties.auto.offset.reset'='latest' is redundant. Keeping both won’t break things, but it’s cleaner to keep only scan.startup.mode.
+    Idempotency/duplication: With append-only sessionized results, restarts can create duplicates depending on sources and checkpointing. If you need stronger guarantees, define a primary key (e.g., (ip, host, session_start)) in Postgres and consider an upsert connector. This is advanced, but worth noting.
+
+Testing Instructions
+
+    Clear and helpful, but incomplete:
+        You reference make homework_job, but the Makefile isn’t included. Please add the Makefile target or include the relevant snippet:
+            homework_job: docker compose exec flink-jobmanager ./bin/flink run -py /path/to/homework_job.py
+        Provide a brief note on how to generate/ingest test data into the Kafka topic (e.g., a simple Python producer, a curl to Confluent Cloud, or a sample file and kafkacat command). Without sample data, reviewers can’t easily reproduce results.
+        Mention where the Postgres JDBC driver jar comes from in your environment (e.g., included in the image or mounted), since the JDBC connector requires it.
+
+Documentation and Results
+
+    You explain how to run the job and where to query results. Good.
+    The assignment asks to answer the questions with results. You provided sample output placeholders but not actual computed values. Please run the queries and include:
+        The single overall average events per session for Tech Creator (one number).
+        The comparison values for the three hosts (host, total_sessions, avg_num_events).
+    Minor schema/indexing improvement (optional but helpful):
+        Add indexes to speed up your queries:
+            CREATE INDEX ON processed_events_sessionized (host);
+            CREATE INDEX ON processed_events_sessionized (host, ip);
+            CREATE INDEX ON processed_events_sessionized (session_start);
+
+Small Fixes and Suggested Patches
+
+    Counting fix in Python:
+        Replace col('ip').count.alias("num_events") with col("*").count.alias("num_events") or lit(1).count.alias("num_events").
+    Overall average query for Q1:
+        SELECT ROUND(AVG(num_events), 2) AS avg_events_per_session_techcreator FROM processed_events_sessionized WHERE host LIKE '%.techcreator.io';
+    Optional: rename sink table in Flink to avoid collisions:
+        CREATE TEMPORARY TABLE processed_events_sessionized_sink (...) WITH ('connector'='jdbc', ... 'table-name'='processed_events_sessionized');
+        Then execute_insert('processed_events_sessionized_sink').
+
+What’s Missing or Needed From You
+
+    Makefile (or the exact command the make homework_job target runs) so we can reproduce easily.
+    Confirmation of Flink 1.16 string-to-timestamp function you’re using (and adjustment if needed).
+    A short note or script to publish a few sample messages to the Kafka topic (schema example for ip, event_time, host, etc.).
+    Actual query results for Q1 (single overall average) and Q2 (three hosts), with a short interpretation.
+
+Overall Assessment
+
+    You meet the core requirements (Flink sessionization by ip+host with 5-minute gap, writing to Postgres).
+    SQL is close; add the overall average for Tech Creator to fully answer Q1.
+    Add the Makefile target and sample data steps so the grader can run the pipeline.
+    With the small fixes above, this would be an A-level submission.
+

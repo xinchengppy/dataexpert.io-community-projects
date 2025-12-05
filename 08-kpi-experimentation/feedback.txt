@@ -1,0 +1,90 @@
+Direct feedback
+
+Overall: Strong, thoughtful submission. You chose a product you clearly use, tied experiments to real pain points and strengths, and outlined hypotheses, test cells, metrics, and guardrails. You also considered segmentation and included MDEs and durations. This is above-average rigor for a homework submission.
+
+User journey
+
+    What worked: Clear narrative arc from discovery to current use; specific features (Snoo avatar, saved posts, awards, niche communities) and a concrete pain point (readability). This gives a credible foundation for your experiments.
+    How to strengthen: Add one or two concrete anecdotes tied to your proposed experiments (e.g., a time you abandoned a thread due to small fonts; an instance where finding the “best answer” took too long). Also note your platform split (mobile vs desktop) because your readability experiment hinges on it.
+
+Experiment 1: Adaptive font size and layout (readability)
+
+    Strengths:
+        Directly addresses a stated pain point.
+        Clear treatment bundle and user-level randomization.
+        Solid guardrails including ad viewability/CTR.
+        Useful segmentation by device and age.
+    Risks and design nits:
+        Primary metric (session duration) is noisy and can move in the wrong direction for the right reasons (e.g., faster answer discovery can reduce session time). Consider a primary metric less confounded by intent.
+        Exposure definition (“view at least 5 posts in the new UI”) conditions on post-treatment behavior. Use intent-to-treat (ITT) for primary analysis and report treatment-on-treated (TOT) as a secondary view.
+        Treatment is a bundle (font size, whitespace, sidebar, indentation). If it wins, you won’t know which element drove impact. Consider a follow-up factorial or a multi-cell design.
+    Recommendations:
+        Replace or pair the primary metric with “satisfied read rate”: share of post views with ≥70% content scrolled and no bounce-back within 10s; or “comment thread comprehension proxy”: time-to-stop-scrolling after first comment with award/≥X upvotes.
+        Add a lightweight CSAT micro-survey after a long-read (1–2% sampling) to get perceived readability.
+        Pre-register decision thresholds, e.g., proceed if satisfied read rate +4% with ad viewability within ±1% and bounce rate not worse than +0.5%.
+        Add a basic sample size estimate to justify the 5–8% MDE.
+        Track font slider adoption separately and check heterogeneity (adopters vs non-adopters).
+
+Experiment 2: Community Game Hub
+
+    Strengths:
+        Clear value proposition and concrete features.
+        Good guardrails for cannibalization and abuse; reasonable rollout split.
+        Segmentation by interest type is smart.
+    Risks and design nits:
+        Primary metric (“DAU among exposed users”) is post-randomization; clickers are a selected group. Use ITT: user-level DAU or sessions per user overall.
+        High spillover risk if games create posts visible to control users (interference). If cross-pollination is expected, consider subreddit- or geo-clustered randomization or suppress game-originated posts in control feeds.
+        Novelty effects are likely; 4–6 weeks may be short to assess habit.
+    Recommendations:
+        Define a games cohort retention metric (e.g., D1/D7/D28 games retention among users who tried a game) and use ITT for platform-wide outcomes.
+        Add monetization guardrails (RPM/eCPM in games surfaces, ad viewability, latency budgets).
+        Predefine cannibalization thresholds (e.g., feed time cannot drop >2% or comment creation >1%).
+        Consider a stepped-wedge rollout to manage operational risk and measure time dynamics.
+        Add a power calc for the 10–15% MDE; you may have ample power on DAU but not on Premium conversion.
+
+Experiment 3: AI-powered “Best Answer”
+
+    Strengths:
+        Subreddit-level randomization is appropriate to avoid mixed experiences and discussion dynamics.
+        Metrics align with the hypothesis (helpfulness, time to solution, saves).
+        Thoughtful guardrails on accuracy, gaming, and fairness.
+    Risks and design nits:
+        Label feedback loop: if the badge uses signals that accrue after the badge is displayed (e.g., upvotes post-exposure), you risk circularity and inflate effects. Freeze the model to only use pre-display signals or run a shadow label assignment that’s not shown to users for accuracy auditing.
+        Exposure definition again conditions on behavior (“view ≥3 threads”). Use ITT at the subreddit level for primary analysis; report exposure-based as secondary.
+        Primary metric (“Was this helpful?”) requires new instrumentation and sampling plan.
+    Recommendations:
+        Stratify subreddit randomization by size/topic to balance clusters; analyze with cluster-robust SEs.
+        Add an offline evaluation plan: human-mod judgments vs model labels to measure precision/recall; target a minimum precision threshold (e.g., ≥80%).
+        Define “time to find answer” consistently (e.g., scroll depth or time from page load to first click on tagged answer).
+        Add explicit anti-gaming checks (unexpected spike in early comment timing, vote rings).
+        Create clear go/no-go thresholds (e.g., helpful reaction rate +10%, OP resolution +5%, mod negative feedback not worse than baseline).
+
+Cross-cutting suggestions
+
+    Metric definitions: Write precise formulas and units (e.g., session duration winsorization, definition of a “session,” “return visit” window boundaries). You named good metrics; now lock definitions to avoid disputes later.
+    Analysis plan:
+        Use ITT for primaries to avoid selection bias; TOT/exposed users as supportive.
+        Pre-specify outlier handling, covariate adjustment (e.g., CUPED with pre-period engagement), and multiple testing control (Benjamini-Hochberg across secondary metrics).
+        Decide on fixed-horizon vs sequential monitoring (and if sequential, use spending functions).
+    Power and duration: Include a back-of-the-envelope sample size and traffic-based duration check to justify MDEs and weeks chosen.
+    Instrumentation: List the event schema you’ll need (e.g., ui_font_adjust, comment_scroll_depth, games_tab_click, game_start, helpful_vote_given, best_answer_seen) and ensure consistent cross-platform logging.
+    Decision framework: For each experiment, add explicit success criteria and guardrail thresholds to guide rollout or iteration.
+    De-risking bundled treatments: Plan follow-up tests to isolate which elements drive wins (especially Exp 1, perhaps a 2x2 on font size x whitespace).
+    Ethics and community: Great that you included fairness/mod feedback; also add a moderator opt-in/opt-out for the Best Answer pilot.
+
+If anything was unclear in the assignment or if you want to strengthen your submission further, please provide:
+
+    Exact metric formulas and units for each primary/secondary/guardrail metric.
+    An ITT vs exposure-based analysis plan and how you’ll avoid post-treatment conditioning.
+    A brief power estimate for each MDE and the implied sample size/duration.
+    Your event logging plan (event names, properties, platforms).
+    Explicit go/no-go criteria tied to your metrics for each experiment.
+    For Exp 3, a description of the model’s input signals at inference time and how you’ll prevent feedback loops.
+
+Final assessment
+
+    Clarity and detail: Strong narrative and specific touchpoints. Meets and exceeds expectations.
+    Relevance of metrics: Mostly on point; main fix is avoiding exposure-conditioned primaries and refining primary metrics for readability.
+    Test design: Logical cell allocation, sensible randomization units, good guardrails. Nice use of segmentation. Some bundled treatments and potential interference risks remain.
+    Overall impact: High potential to improve usability, engagement, and core information quality.
+

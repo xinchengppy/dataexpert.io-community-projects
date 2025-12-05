@@ -1,0 +1,80 @@
+** This feedback is auto-generated from an LLM **
+
+Thanks for the clear submission. I walked through all five files and evaluated both correctness and maintainability. Overall, this is a solid implementation that’s internally consistent and shows good understanding of cumulative rollups and SCD construction.
+
+What you did well
+
+    Types and DDL
+        Composite type film_review and enum quality_class are well-defined.
+        actors table schema with PK (actorid, current_year) is appropriate for yearly snapshots.
+    Cumulative build (2002 from 2001)
+        Correctly aggregates this_year films and concatenates with last_year’s array.
+        is_active flag is set based on this_year presence.
+        Reasonable quality_class mapping from average rating, with fallback when ratings are all NULL.
+        FULL OUTER JOIN covers carry-forward and net-new actors.
+    Full SCD history
+        Change detection via window LAG for both quality_class and is_active is correct.
+        Grouping by a stable change_identifier and turning it into start/end year segments is a good pattern.
+        Producing a snapshot with current_year equal to the max actors.current_year aligns with your incremental approach.
+    Incremental SCD
+        Clean separation of historical, unchanged, changed, and new segments.
+        Correctly closes the prior segment when a change occurs and opens a new one for the current year.
+        Preserves historical segments from prior snapshot and re-stamps them with the new snapshot current_year.
+
+Notes and suggestions
+
+    Parameterization/Hard-coding
+        02-actors_cumulative.sql is hard-coded to last_year=2001 and this_year=2002. Consider following your approach in 05 and parameterizing prev_year/this_year so this becomes reusable for subsequent years and tests.
+    Quality thresholds
+        You use >8 for star and >7 AND <=8 for good; this means exactly 8.0 is good, not star. Confirm this matches the spec. If the intent is “star: rating >= 8,” adjust accordingly.
+    Rating null handling
+        AVG ignores NULLs, so ty.rating will only be NULL if all ratings are NULL. Your fallback to ly.quality_class (or 'bad') is fine, but consider whether spec requires carrying forward vs. demoting.
+    Array ordering and content
+        You order this_year films by (year, filmid) and then append to last_year’s array. This is fine; if you want global monotonic ordering by year/filmid across all years, your approach already achieves that via concatenation of year-order-preserved arrays.
+    Actor name changes
+        In the full SCD build, you group by actor as well as change_identifier, but did_change only tracks quality_class/is_active. This can split segments when the name changes even though you didn’t flag a change. Decide whether name changes should:
+            be included in did_change (to explicitly start a new SCD segment), or
+            be treated as a descriptive attribute determined by first_value/last_value within each segment (so you do not split segments on name only).
+        As written, it will produce multiple rows per change_identifier when names change; that’s not inherently wrong, but be explicit about the intended behavior.
+    Open-ended vs. closed segments
+        Your design keeps the latest segment “closed” to the snapshot year (end_year always equals the last year in the segment). This is consistent with your incremental script (which depends on end_year = prev_year for the latest segment). If your rubric prefers open-ended segments (end_year NULL for current), you would need to adjust both 04 and 05 accordingly.
+    Key and constraints
+        actors_history_scd has PK (actorid, start_year, current_year). This is valid for snapshot-by-year storage, and the PK implies NOT NULL on those columns (even though current_year isn’t explicitly declared NOT NULL).
+    Idempotency and re-runs
+        CREATE TYPE scd_type won’t be idempotent in many Postgres versions (IF NOT EXISTS isn’t supported for all object types). Consider either guarding type creation (DO block with a catalog existence check), using CREATE TYPE IF NOT EXISTS if your PG version supports it, or dropping it first in a controlled migration flow.
+    Consistency assumptions
+        Incremental SCD assumes all actors have a row in actors every year (including inactive carry-forward). Given your cumulative build, that assumption holds. If that assumption ever changes (e.g., gaps), you’ll need to handle actors missing from this_year (carrying forward the last segment record).
+    Minor style/semantics
+        film_review.year is fine in Postgres, but year can be an overloaded concept; consider film_year to be more self-documenting.
+        In 04, the scalar subquery (SELECT MAX(current_year) FROM actors) is fine; if you want to avoid repeated evaluation, lift it into a params CTE and cross join.
+
+Sanity checks you can add
+
+    Unit tests/queries:
+        Validate that each actor has exactly one row per year in actors.
+        Validate that SCD snapshots contain:
+            all prior segments (end_year < snapshot year),
+            exactly one “latest” segment per actor with end_year = snapshot year.
+        Spot check an actor across years with:
+            no films in this_year (is_active should be false, quality_class carried),
+            a small rating change around thresholds (to confirm class mapping),
+            a name change with identical flags (to confirm your intended behavior).
+
+Possible setup issues on my side and info you can provide
+
+    There were no rubrics or acceptance criteria included. If you have specific requirements, please share:
+        Exact quality_class thresholds (>= vs > for boundaries).
+        Whether open segments should have end_year = NULL.
+        Whether actor name changes should trigger a new SCD row.
+        Target Postgres version (matters for IF NOT EXISTS and some syntax).
+        Expected parameterization (should scripts be reusable across arbitrary years?).
+        Sample input data and expected outputs (for validation).
+    If you want me to run correctness checks, provide:
+        A small actor_films sample for 2001 and 2002,
+        The expected rows for actors (2002) and actors_history_scd (2002 snapshot).
+
+Overall assessment
+
+    The logic is coherent and consistent across full vs. incremental approaches, and the key edge cases are reasonably handled. With minor parameterization and a decision on name-change handling, this would be production-ready for many classroom/assessment contexts.
+
+FINAL GRADE: { "letter_grade": "A", "passes": true }
